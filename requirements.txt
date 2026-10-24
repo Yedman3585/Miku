@@ -1,0 +1,5 @@
+pygame
+pyserial
+numpy
+opencv-python
+pillow
