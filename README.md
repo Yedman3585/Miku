@@ -31,5 +31,5 @@
 - `miku_runner.py` — вся игра и связь с Arduino
 - `pixel_miku.py` — нарисованные вручную 1-битные спрайты для OLED (правятся прямо буквами)
 - `make_sprites.py` — нарезка цветных спрайтов из `assets/src/` (нужен scipy, запускать только при смене картинок)
-- `assets/` — готовые спрайты. Свои фон-видео и музыку клади сюда: `splash.mp4`, `music.mp3|ogg|wav`
+- `assets/` — готовые спрайты. Видео-фон заставки `splash.mp4` и музыка `music.mp3` (можно подменить своими)
 - `miku_game.py`, `make_splash.py`, `arduino/miku_joystick_oled/` — старый арканоид, не нужны для Runner

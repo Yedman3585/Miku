@@ -361,8 +361,12 @@ def _note_hz(m):
 class Sounds:
     SR = 44100
 
+    # Звук в видео — смонтированные куски песни. (время в видео, смещение в песне music.mp3):
+    SYNC = ((0.0, 10.945), (14.35, 15.23), (43.1, 31.30))
+
     def __init__(self, volume=0.5):
         self.ok, self.muted = False, False
+        self.intro, self.intro_len, self.intro_t0, self.phase = None, 64.8069, time.time(), "intro"
         self.music_path = next((os.path.join(ASSETS, n) for n in
                                 ("music.mp3", "music.ogg", "music.wav")
                                 if os.path.exists(os.path.join(ASSETS, n))), None)
@@ -372,6 +376,13 @@ class Sounds:
         except Exception:
             return
         self.volume = volume
+        ip = os.path.join(ASSETS, "intro.mp3")
+        if os.path.exists(ip):
+            try:
+                self.intro = pygame.mixer.Sound(ip)
+                self.intro_len = self.intro.get_length()
+            except Exception:
+                self.intro = None
         self.s = {
             "jump": self._sweep(330, 700, 140),
             "hit": self._sweep(300, 70, 380, noise=0.5),
@@ -447,7 +458,7 @@ class Sounds:
             self.s[name].set_volume(self.volume)
             self.s[name].play()
 
-    def music_on(self):
+    def music_on(self, start=0.0, fade_ms=0):
         if not self.ok or self.muted:
             return
         if self.music_path:
@@ -455,12 +466,40 @@ class Sounds:
                 try:
                     pygame.mixer.music.load(self.music_path)
                     pygame.mixer.music.set_volume(self.volume)
-                    pygame.mixer.music.play(-1)
+                    try:
+                        pygame.mixer.music.play(-1, start=start, fade_ms=fade_ms)
+                    except Exception:
+                        pygame.mixer.music.play(-1)
                 except Exception:
                     self.music_path = None
         elif self.chip and self.chip.get_num_channels() == 0:
             self.chip.set_volume(self.volume * 0.7)
             self.chip.play(-1)
+
+    # ---- интро: звук из видео + переход на полную песню с того же места ----
+    def intro_on(self):
+        self.phase, self.intro_t0 = "intro", time.time()
+        if self.ok and self.intro and not self.muted:
+            self.intro.set_volume(self.volume)
+            self.intro.play(loops=-1)
+
+    def intro_time(self):
+        return (time.time() - self.intro_t0) % self.intro_len
+
+    def song_pos(self, t):
+        off = self.SYNC[0][1]
+        for t0, o in self.SYNC:
+            if t >= t0:
+                off = o
+        return t + off
+
+    def open_game(self):
+        """Нажали OPEN GAME: интро плавно уходит, песня продолжается с этого же места."""
+        pos = self.song_pos(self.intro_time() + 0.15)
+        self.phase = "game"
+        if self.ok and self.intro:
+            self.intro.fadeout(600)
+        self.music_on(start=pos, fade_ms=600)
 
     def music_off(self):
         if self.ok and self.music_path:
@@ -473,6 +512,8 @@ class Sounds:
         if self.muted:
             pygame.mixer.stop()
             pygame.mixer.music.stop()
+        elif self.phase == "intro":
+            self.intro_on()
         else:
             self.music_on()
 
@@ -501,7 +542,8 @@ class Game:
         self.snd = snd
         self.hi = self._load_hi()
         self.t = 0.0
-        self.to_splash()
+        self.state, self.state_t = "gate", 0.0   # пустой экран с кнопкой OPEN GAME
+        self.reset()
 
     def _load_hi(self):
         try:
@@ -554,7 +596,11 @@ class Game:
     def update(self, dt, inp):
         self.t += dt
         self.state_t += dt
-        if self.state == "splash":
+        if self.state == "gate":
+            if inp.jump_pressed or inp.click:
+                self.snd.open_game()      # песня продолжается с места видео
+                self.to_splash()
+        elif self.state == "splash":
             if inp.jump_pressed or inp.click:
                 self.start()
         elif self.state == "over":
@@ -673,6 +719,11 @@ class Game:
 # ============================ ПРОРИСОВКА: OLED ============================
 def draw_oled(cv, g, spr):
     cv.clear()
+    if g.state == "gate":
+        cv.center_text("MIKU RUNNER", 22, 1)
+        if int(g.t * 2) % 2 == 0:
+            cv.center_text("PRESS START", 36, 1)
+        return
     if g.state == "splash":
         draw_oled_splash(cv, g, spr)
         return
@@ -800,6 +851,9 @@ class PCView:
         self.dim.fill((8, 6, 24, 150))
         self.btn = pygame.Rect(0, 0, 320, 84)
         self.btn.center = (800, 330)
+        self.gate_btn = pygame.Rect(0, 0, 380, 80)
+        self.gate_btn.center = (WIN_W // 2, WIN_H - 62)
+        self.gate_bg = vgradient(WIN_W, WIN_H, [(12, 9, 34), (24, 14, 56)])
         self._text_cache = {}
 
     @staticmethod
@@ -937,10 +991,7 @@ class PCView:
 
     # ---- заставка ----
     def draw_splash(self, dst, g, mouse):
-        if self.video:
-            dst.blit(self.video.frame(), (0, 0))
-            dst.blit(self.splash_dim, (0, 0))
-        else:
+        if True:
             self.background(dst, g)
             dst.blit(self.splash_dim, (0, 0))
             for k in range(7):   # плавающие ноты
@@ -970,7 +1021,7 @@ class PCView:
         self.text(dst, f"HI {g.hi:05d}", 800, 440, 5, (255, 220, 120), (10, 10, 40), center=True)
 
     def draw_hud(self, dst, g):
-        if g.state == "splash":
+        if g.state in ("gate", "splash"):
             return
         self.text(dst, f"HI {g.hi:05d}", 24, 20, 5, (170, 170, 200))
         if g.flash <= 0 or int(g.flash * 8) % 2 == 0:
@@ -985,7 +1036,22 @@ class PCView:
         if int(g.t * 2) % 2 == 0:
             self.text(dst, "PRESS START", 640, 370, 6, (255, 255, 255), (240, 80, 140), center=True)
 
+    def draw_gate(self, dst, g, mouse):
+        if self.video:
+            dst.blit(self.video.frame(g.snd.intro_time()), (0, 0))
+        else:
+            dst.blit(self.gate_bg, (0, 0))
+        hover = self.gate_btn.collidepoint(mouse)
+        r = self.gate_btn.inflate(14 if hover else 0, 8 if hover else 0)
+        pygame.draw.rect(dst, (8, 30, 48), r.move(6, 6))
+        pygame.draw.rect(dst, (90, 235, 220) if hover else (57, 197, 187), r)
+        pygame.draw.rect(dst, (8, 30, 48), r, 4)
+        self.text(dst, "OPEN GAME", r.centerx, r.centery - 12, 5, (255, 255, 255), (8, 70, 90), center=True)
+
     def draw(self, dst, g, mouse):
+        if g.state == "gate":
+            self.draw_gate(dst, g, mouse)
+            return
         if g.state == "splash":
             self.draw_splash(dst, g, mouse)
             return
@@ -997,7 +1063,7 @@ class PCView:
 
 
 class VideoBG:
-    """Фоновое видео заставки (assets/splash.mp4)."""
+    """Видео первого экрана (assets/splash.mp4). Кадр выбирается по времени t (в секундах)."""
 
     def __init__(self, path):
         import cv2
@@ -1005,19 +1071,29 @@ class VideoBG:
         self.cap = cv2.VideoCapture(path)
         self.ok = self.cap.isOpened()
         self.fps = self.cap.get(cv2.CAP_PROP_FPS) or 30
-        self.t0 = time.time()
-        self.n = 0
+        self.count = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        self.n = 0          # сколько кадров уже прочитано
         self.surf = pygame.Surface((WIN_W, WIN_H))
 
-    def frame(self):
-        want = int((time.time() - self.t0) * self.fps)
+    def frame(self, t):
+        want = int(t * self.fps)
+        if self.count:
+            want = min(want, self.count - 1)
+        if want < self.n - 1 or want > self.n + 90:      # зациклилось или рывок — перемотка
+            self.cap.set(self.cv2.CAP_PROP_POS_FRAMES, want)
+            self.n = want
+        img = None
         while self.n <= want and self.ok:
+            if self.n < want:
+                self.cap.grab()
+                self.n += 1
+                continue
             ok, img = self.cap.read()
-            if not ok:
-                self.cap.set(self.cv2.CAP_PROP_POS_FRAMES, 0)
-                self.t0, self.n = time.time(), 0
-                break
             self.n += 1
+            if not ok:
+                img = None
+            break
+        if img is not None:
             h, w = img.shape[:2]
             k = max(WIN_W / w, WIN_H / h)
             img = self.cv2.resize(img, (int(w * k) + 1, int(h * k) + 1))
@@ -1062,11 +1138,16 @@ def main():
     video = None
     vp = os.path.join(ASSETS, "splash.mp4")
     if os.path.exists(vp) and not args.no_video:
-        video = VideoBG(vp)
-        if not video.ok:
+        try:
+            video = VideoBG(vp)
+            if not video.ok:
+                video = None
+        except ImportError:
+            print("Для видео-фона нужен opencv: python -m pip install opencv-python")
             video = None
     view = PCView(spr, video)
     snd = Sounds()
+    snd.intro_on()
     game = Game(snd)
     inp = Input(link)
     cv = Canvas()
@@ -1097,7 +1178,8 @@ def main():
                     fullscreen = not fullscreen
                     pygame.display.set_mode((WIN_W, WIN_H + BAR), pygame.FULLSCREEN | pygame.SCALED if fullscreen else 0)
         inp.update(events)
-        if inp.click and not view.btn.collidepoint(inp.click):
+        btn = view.gate_btn if game.state == "gate" else view.btn
+        if inp.click and not btn.collidepoint(inp.click):
             inp.click = None
         if args.bot:
             game.bot(inp)
@@ -1118,11 +1200,11 @@ def main():
         # --- в окно ---
         view.draw(scene, game, pygame.mouse.get_pos())
         screen.blit(scene, (0, 0))
-        if show_oled:
+        if show_oled and game.state not in ("gate", "splash"):
             rgb = np.where(cv.px[..., None], (57, 197, 187), (8, 10, 14)).astype(np.uint8)
             surf = pygame.surfarray.make_surface(rgb.swapaxes(0, 1))
             surf = pygame.transform.scale(surf, (256, 128))
-            ix = 8 if game.state == "splash" else WIN_W - 272   # на заставке справа title — уступаем место
+            ix = WIN_W - 272
             pygame.draw.rect(screen, (255, 255, 255), (ix, 8, 264, 136), border_radius=6)
             screen.blit(surf, (ix + 4, 12))
         pygame.draw.rect(screen, (14, 14, 24), (0, WIN_H, WIN_W, BAR))
